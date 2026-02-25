@@ -61,8 +61,6 @@ A **production-ready, offline-first Computer-Based Testing (CBT) system** for Wi
 | ![Admin Dashboard](assets/screenshots/admin-dashboard.png) | ![Student Login](assets/screenshots/student-login.png) | ![Exam Interface](assets/screenshots/exam-interface.png) |
 | *Real-time stats and controls* | *Secure student authentication* | *Clean exam-taking experience* |
 
-> **Note**: Add actual screenshots to the `assets/screenshots/` folder
-
 ---
 
 ## ⚙️ **Architecture**
@@ -331,5 +329,6 @@ If you find this project useful, please consider giving it a star on GitHub! It 
 - All contributors and testers
 
 ---
+
 
 **Built with ❤️ for education**
