@@ -1,0 +1,42 @@
+Type,Text,OptA,OptB,OptC,OptD,Answer
+OBJ,What is Flutter?,A UI framework for building native applications,A programming language,A database management system,A cloud computing platform,A
+OBJ,Which programming language is used by Flutter?,Java,Kotlin,Dart,JavaScript,C
+OBJ,What is a widget in Flutter?,A UI component,A database query,A network request,A background process,A
+OBJ,Which of the following is NOT a type of widget in Flutter?,,,,,D
+OBJ,What does the 'build' method return in a Flutter widget?,String,Widget,int,bool,B
+OBJ,Which command is used to create a new Flutter project?,flutter create,flutter new,flutter,flutter start,A
+OBJ,What is the purpose of the ',To manage dependencies,To write application logic,To design UI,To run tests,A
+OBJ,Which widget is used for making HTTP requests in Flutter?,http,request,fetch,,A
+OBJ,What is the default port for a Flutter web server?,3000,5000,8080,8000,C
+OBJ,Which function is the entry point of every Flutter app?,,,,,B
+OBJ,What is,State management,Networking,Database operations,Animation,A
+OBJ,Which widget is used for navigation in Flutter?,Navigator,Router,Link,Route,A
+OBJ,What does CSV stand for?,Comma Separated Values,Computer System Values,Common Syntax Variables,Code Structure Version,A
+OBJ,Which package is used for creating charts in Flutter?,,,,,A
+OBJ,What is the purpose of the 'shelf' package?,Web server functionality,Database connectivity,File handling,Animation,A
+OBJ,Which HTTP method is used to submit exam results?,GET,POST,PUT,DELETE,B
+OBJ,What is the correct file extension for a Dart file?,.dart,.flutter,.d,.dt,A
+OBJ,Which widget is used for displaying images?,Image,Picture,Photo,Icon,A
+OBJ,What does 'hot reload' do in Flutter?,Updates code without restarting,Restarts the entire app,Cleans the project,Installs dependencies,A
+OBJ,Which command runs a Flutter app on Windows?,flutter run -d windows,flutter windows run,flutter execute windows,flutter start windows,A
+OBJ,What is the purpose of ',To update the UI,To create a new widget,To navigate screens,To handle gestures,A
+OBJ,Which widget is used for scrolling content?,,,Scroller,Scrollable,A
+OBJ,What does 'async' keyword mean in Dart?,Asynchronous operation,Always,Array sync,Auto sync,A
+OBJ,Which type of database is commonly used with Flutter?,SQLite,MySQL,MongoDB,Oracle,A
+OBJ,What is the purpose of the 'Container' widget?,To hold and decorate other widgets,To handle navigation,To manage state,To make HTTP requests,A
+OBJ,Which widget is used for user input?,,,,,A
+OBJ,What does 'const' mean in Dart?,Compile-time constant,Constructor,Container,Control,A
+OBJ,Which package is used for file picking?,,,,,A
+OBJ,What is the purpose of the 'Row' widget?,To arrange children horizontally,To arrange children vertically,To stack children,To wrap children,A
+OBJ,Which widget is used for showing progress?,,,,,A
+OBJ,What does 'final' keyword mean in Dart?,Variable can be set only once,Variable can be changed,Variable is static,Variable is global,A
+OBJ,Which package is used for parsing XML?,xml,,,,A
+OBJ,What is the purpose of the 'Center' widget?,To center its child,To center text,To center alignment,To center position,A
+OBJ,Which widget is used for lists?,,List,,,A
+OBJ,What does ',Temporary message,Permanent message,Error dialog,Loading indicator,A
+OBJ,Which command is used to get packages?,flutter pub get,flutter get,flutter packages,flutter install,A
+OBJ,What is the purpose of ',Entry point of the app,Configuration file,Dependency file,Asset file,A
+OBJ,Which widget is used for buttons?,,,,,A
+OBJ,What does ',Development mode,Production mode,Test mode,Release mode,A
+OBJ,Which is the correct way to create a,class,class,class,class,A
+

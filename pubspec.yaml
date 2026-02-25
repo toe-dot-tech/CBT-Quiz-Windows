@@ -1,0 +1,52 @@
+
+name: cbtapp
+description: CBT Quiz Application
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.8.1
+
+dependencies:
+  archive: ^4.0.9
+  fl_chart: ^1.1.1
+  flutter:
+    sdk: flutter
+  flutter_riverpod: ^2.5.1
+  http: ^1.6.0
+
+  shelf: ^1.4.2
+  shelf_router: ^1.1.4
+  shelf_static: ^1.1.3
+  xml: ^6.6.1
+
+  file_picker: ^8.0.0  
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+dependency_overrides:
+  objective_c: 9.3.0
+
+flutter:
+  uses-material-design: true
+
+
+assets:
+    # Web assets for student UI
+  - assets/web/
+  - assets/web/index.html
+  - assets/web/main.dart.js
+  - assets/web/assets/
+  - assets/web/icons/
+  - assets/web/favicon.png
+    
+    # CSV files
+  - questions.csv
+  - registered_students.csv
+  - quiz_results.csv
+    
+    # Any other asset folders
+  - assets/
