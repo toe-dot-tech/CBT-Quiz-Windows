@@ -4,8 +4,6 @@ include: package:flutter_lints/flutter.yaml
 analyzer:
   enable-experiment:
     - dot-shorthands  # Enable this experimental feature
-  errors:
-    experimental: ignore
 
 linter:
   rules:

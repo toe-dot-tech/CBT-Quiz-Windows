@@ -1,14 +1,25 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'package:cbtapp/server/quiz_server.dart';
 import 'package:cbtapp/services/result_storage_service.dart';
+import 'package:cbtapp/utils/app_colors.dart';
 import 'package:cbtapp/utils/csv_helper.dart';
 import 'package:cbtapp/utils/docs_helper.dart';
 import 'package:cbtapp/utils/file_picker_helper.dart';
-import 'package:cbtapp/utils/path_helper.dart';
+import 'package:cbtapp/widgets/add_student_dialog.dart';
+import 'package:cbtapp/widgets/admin/download_results_dialog.dart';
+import 'package:cbtapp/widgets/admin/edit_exam_dialog.dart';
+import 'package:cbtapp/widgets/admin/import_dialog.dart';
+import 'package:cbtapp/widgets/confirm_dialog.dart';
+import 'package:cbtapp/widgets/developer_credit_container.dart';
+import 'package:cbtapp/widgets/session_card.dart';
+import 'package:cbtapp/widgets/student_list_dialog.dart';
+import 'package:cbtapp/widgets/trend_chart.dart';
+import 'package:cbtapp/widgets/admin/live_log_section.dart';
+import 'package:cbtapp/widgets/admin/stats_cards.dart';
+import 'package:cbtapp/widgets/admin/view_questions_dialog.dart';
 import 'package:flutter/material.dart';
-import 'package:fl_chart/fl_chart.dart';
+import 'package:flutter/services.dart';
 
 class AdminView extends StatefulWidget {
   const AdminView({super.key});
@@ -16,7 +27,8 @@ class AdminView extends StatefulWidget {
   State<AdminView> createState() => _AdminViewState();
 }
 
-class _AdminViewState extends State<AdminView> {
+class _AdminViewState extends State<AdminView>
+    with SingleTickerProviderStateMixin {
   bool isLive = false;
   String ip = "Offline";
 
@@ -26,22 +38,32 @@ class _AdminViewState extends State<AdminView> {
   Timer? _refreshTimer;
   String _submissionStatus = "0 / 0";
 
-  List<List<dynamic>> _registeredData = [];
-  List<List<dynamic>> _uploadedQuestions = [];
-  int _totalQuestionsAvailable = 0;
+  // Removed _registeredData and _uploadedQuestions since they're session-based now
+  int _totalStudents = 0;
 
-  final _courseController = TextEditingController(text: "General Studies 101");
-  final _timerController = TextEditingController(text: "60");
-  final _qCountController = TextEditingController(text: "50");
+  final _courseController = TextEditingController(text: "Library Science");
+  final _timerController = TextEditingController(text: "20");
+  final _qCountController = TextEditingController(text: "35");
 
-  final _qTextController = TextEditingController();
-  final _optA = TextEditingController();
-  final _optB = TextEditingController();
-  final _optC = TextEditingController();
-  final _optD = TextEditingController();
-  final _ansController = TextEditingController();
+  // Subject management controllers
+  final _subjectCodeController = TextEditingController(text: "MATH101");
+  final _subjectTitleController = TextEditingController(
+    text: "Mathematics 101",
+  );
+  final _subjectDurationController = TextEditingController(text: "30");
+  final _subjectQuestionLimitController = TextEditingController(text: "40");
+
+  late final AnimationController _pulseController;
+  late final Animation<double> _pulseAnimation;
 
   final ResultStorageService resultService = ResultStorageService();
+
+  List<int> _passTrendData = [];
+  List<int> _failTrendData = [];
+  List<String> _trendLabels = [];
+  Timer? _trendUpdateTimer;
+
+  List<Map<String, dynamic>> _availableSessions = [];
 
   @override
   void initState() {
@@ -58,8 +80,28 @@ class _AdminViewState extends State<AdminView> {
         });
       }
     });
-    _attemptLoadExistingRegistry();
-    _refreshQuestionBank();
+
+    QuizServer().subjectUpdateStream.listen((_) {
+      if (mounted) {
+        _loadAvailableSessions();
+      }
+    });
+
+    _pulseController = AnimationController(
+      duration: const Duration(milliseconds: 1500),
+      vsync: this,
+    )..repeat(reverse: true);
+
+    _pulseAnimation = Tween<double>(begin: 0.5, end: 1.0).animate(
+      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    );
+
+    _initializeTrendData();
+    _trendUpdateTimer = Timer.periodic(const Duration(seconds: 10), (timer) {
+      _updateTrendData();
+    });
+
+    _loadAvailableSessions();
   }
 
   @override
@@ -68,13 +110,698 @@ class _AdminViewState extends State<AdminView> {
     _courseController.dispose();
     _timerController.dispose();
     _qCountController.dispose();
-    _qTextController.dispose();
-    _optA.dispose();
-    _optB.dispose();
-    _optC.dispose();
-    _optD.dispose();
-    _ansController.dispose();
+    _subjectCodeController.dispose();
+    _subjectTitleController.dispose();
+    _subjectDurationController.dispose();
+    _subjectQuestionLimitController.dispose();
+    _trendUpdateTimer?.cancel();
+    _pulseController.dispose();
+
     super.dispose();
+  }
+
+  void _initializeTrendData() {
+    _passTrendData = [0, 0, 0, 0, 0, 0];
+    _failTrendData = [0, 0, 0, 0, 0, 0];
+    _trendLabels = ['-5m', '-4m', '-3m', '-2m', '-1m', 'now'];
+  }
+
+  void _updateTrendData() {
+    setState(() {
+      if (_passTrendData.length >= 20) {
+        _passTrendData.removeAt(0);
+        _failTrendData.removeAt(0);
+        _trendLabels.removeAt(0);
+      }
+      _passTrendData.add(passedCount);
+      _failTrendData.add(failedCount);
+      _trendLabels.add('${DateTime.now().minute}:${DateTime.now().second}');
+    });
+  }
+
+  void _loadAvailableSessions() {
+    final subjects = QuizServer().getSubjects();
+    setState(() {
+      _availableSessions = subjects.entries.map((entry) {
+        return {
+          'code': entry.key,
+          'title': entry.value.title,
+          'duration': entry.value.duration,
+          'questionLimit': entry.value.questionLimit,
+          'students': entry.value.enrolledStudents.length,
+          'completed': entry.value.completedStudents.length,
+          'questionCount': entry.value.questionCount,
+        };
+      }).toList();
+
+      // Update total students count
+      _totalStudents = QuizServer().getStudents().length;
+    });
+  }
+
+  void _showAddStudentToSessionDialog(String subjectCode, String subjectTitle) {
+    final allStudents = QuizServer()
+        .getStudents()
+        .values
+        .map(
+          (student) => {
+            'matric': student.matric,
+            'surname': student.surname,
+            'firstname': student.firstname,
+            'class': student.studentClass ?? 'N/A',
+          },
+        )
+        .toList();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AddStudentToSessionDialog(
+        subjectCode: subjectCode,
+        subjectTitle: subjectTitle,
+        allStudents: allStudents,
+        onAdd: (matric, surname, firstname, studentClass) {
+          _saveSingleStudentToSession(
+            subjectCode,
+            matric,
+            surname,
+            firstname,
+            studentClass,
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _saveSingleStudentToSession(
+    String subjectCode,
+    String matric,
+    String surname,
+    String firstname,
+    String studentClass,
+  ) async {
+    try {
+      final matricUpper = matric.trim().toUpperCase();
+      print("📝 Adding student $matricUpper to session $subjectCode");
+
+      // Check if student exists in main registry
+      final allStudents = QuizServer().getStudents();
+      if (!allStudents.containsKey(matricUpper)) {
+        // Add to main registry first
+        print("➕ Adding new student to main registry: $matricUpper");
+        QuizServer().addStudentToRegistry(
+          matric: matricUpper,
+          surname: surname,
+          firstname: firstname,
+          studentClass: studentClass.isEmpty ? "Not Specified" : studentClass,
+        );
+      }
+
+      // Enroll student in session - this should update both student and subject
+      print("📚 Enrolling $matricUpper in subject: $subjectCode");
+      QuizServer().enrollStudentInSubjects(matricUpper, [subjectCode]);
+
+      // Force a reload of sessions to reflect changes
+      _loadAvailableSessions();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("✅ Student $matricUpper added to $subjectCode"),
+            backgroundColor: AppColors.success,
+          ),
+        );
+      }
+
+      print("✅ Successfully added student to session");
+    } catch (e) {
+      print("❌ Error in _saveSingleStudentToSession: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Error adding student: $e"),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+    }
+  }
+
+  void _showViewEnrolledStudentsDialog(
+    String subjectCode,
+    String subjectTitle,
+  ) {
+    final subject = QuizServer().getSubjects()[subjectCode];
+    if (subject == null) return;
+
+    final enrolledMatrics = subject.enrolledStudents;
+    final students = QuizServer().getStudents();
+
+    List<Map<String, dynamic>> enrolledStudents = [];
+    for (var matric in enrolledMatrics) {
+      final student = students[matric];
+      if (student != null) {
+        enrolledStudents.add({
+          'matric': student.matric,
+          'name': "${student.surname} ${student.firstname}",
+          'class': student.studentClass ?? 'N/A',
+        });
+      }
+    }
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StudentListDialog(
+        subjectCode: subjectCode,
+        subjectTitle: subjectTitle,
+        students: enrolledStudents,
+        onExport: () {
+          // TODO: Implement export functionality
+          Navigator.pop(ctx);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("Export feature coming soon"),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  void _showViewQuestionsDialog(String subjectCode, String subjectTitle) {
+    showDialog(
+      context: context,
+      builder: (ctx) => ViewQuestionsDialog(
+        subjectCode: subjectCode,
+        subjectTitle: subjectTitle,
+      ),
+    );
+  }
+
+  void _showRemoveSessionDialog(Map<String, dynamic> session) {
+    showDialog(
+      context: context,
+      builder: (ctx) => ConfirmDialog(
+        title: "Remove Session?",
+        message: "This will permanently delete:",
+        items: [
+          "Session: ${session['title']} (${session['code']})",
+          "Question bank: questions_${session['code'].toLowerCase()}.csv",
+          "All student enrollments for this session",
+        ],
+        onConfirm: () async {
+          // Show loading
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (ctx) => const AlertDialog(
+              backgroundColor: AppColors.surfaceLight,
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(height: 16),
+                  Text("Removing session..."),
+                ],
+              ),
+            ),
+          );
+
+          QuizServer().removeExamSession(session['code']);
+
+          if (context.mounted) Navigator.pop(context);
+          _loadAvailableSessions();
+
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text("✅ Session ${session['code']} removed"),
+                backgroundColor: AppColors.success,
+              ),
+            );
+          }
+        },
+        confirmColor: AppColors.error,
+      ),
+    );
+  }
+
+  void _showEditExamDialog(Map<String, dynamic> session) {
+    showDialog(
+      context: context,
+      builder: (ctx) => EditExamDialog(
+        session: session,
+        onSave: (code, title, duration, questionLimit) {
+          QuizServer().editExamSession(
+            subjectCode: code,
+            courseTitle: title,
+            duration: duration,
+            questionLimit: questionLimit,
+          );
+          _loadAvailableSessions();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text("✅ Session updated for $code"),
+              backgroundColor: AppColors.success,
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  void _showClearAllSessionsDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => ConfirmDialog(
+        title: "Clear All Sessions?",
+        message: "This will PERMANENTLY DELETE:",
+        items: [
+          "All exam session files (questions_*.csv)",
+          "All subject data and enrollments",
+          "Student subject assignments",
+        ],
+        onConfirm: () async {
+          // Show loading
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (ctx) => const AlertDialog(
+              backgroundColor: AppColors.surfaceLight,
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(height: 16),
+                  Text("Clearing all sessions..."),
+                ],
+              ),
+            ),
+          );
+
+          QuizServer().clearAllSessions();
+
+          if (context.mounted) Navigator.pop(context);
+          _loadAvailableSessions();
+
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text("✅ All sessions cleared successfully"),
+                backgroundColor: Colors.green,
+              ),
+            );
+          }
+        },
+        confirmColor: AppColors.error,
+      ),
+    );
+  }
+
+  void _showBulkImportStudentsDialog(String subjectCode, String subjectTitle) {
+    showDialog(
+      context: context,
+      builder: (ctx) => ImportStudentsDialog(
+        subjectCode: subjectCode,
+        subjectTitle: subjectTitle,
+        onSelectFile: () => _importStudentsForSubject(subjectCode),
+      ),
+    );
+  }
+
+  Future<void> _importStudentsForSubject(String subjectCode) async {
+    try {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => const AlertDialog(
+          backgroundColor: AppColors.surfaceLight,
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text("Selecting CSV file..."),
+            ],
+          ),
+        ),
+      );
+
+      final file = await FilePickerHelper.pickCsvFile();
+
+      if (context.mounted) Navigator.pop(context);
+
+      if (file == null) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("No file selected"),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+        return;
+      }
+
+      if (context.mounted) {
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: AppColors.surfaceLight,
+            content: const Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text("Importing students..."),
+              ],
+            ),
+          ),
+        );
+      }
+
+      final result = await QuizServer().importStudentsFromCsv(
+        file,
+        subjectCode,
+      );
+
+      if (context.mounted) Navigator.pop(context);
+
+      if (context.mounted) {
+        String message;
+        Color color;
+
+        if (result['added'] > 0) {
+          message =
+              "✅ Import complete!\n"
+              "Added: ${result['added']} new students\n"
+              "Already enrolled: ${result['existing']}\n"
+              "Failed: ${result['failed']}";
+          color = Colors.green;
+        } else {
+          message =
+              "⚠️ No new students added.\n"
+              "Already enrolled: ${result['existing']}\n"
+              "Failed: ${result['failed']}";
+          color = Colors.orange;
+        }
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message),
+            backgroundColor: color,
+            duration: const Duration(seconds: 6),
+          ),
+        );
+      }
+
+      _loadAvailableSessions();
+    } catch (e) {
+      if (context.mounted) Navigator.pop(context);
+      if (context.mounted) {
+        _showErrorDialog("Error importing students: $e");
+      }
+    }
+  }
+
+  void _importQuestionsForSubject(String subjectCode) {
+    showDialog(
+      context: context,
+      builder: (ctx) => ImportQuestionsDialog(
+        subjectCode: subjectCode,
+        subjectTitle: subjectCode,
+        onSelectFile: () => _processSubjectQuestions(subjectCode),
+      ),
+    );
+  }
+
+  Future<void> _processSubjectQuestions(String subjectCode) async {
+    try {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => const AlertDialog(
+          backgroundColor: AppColors.surfaceLight,
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text("Selecting file..."),
+            ],
+          ),
+        ),
+      );
+
+      final file = await FilePickerHelper.pickDocxFile();
+
+      if (context.mounted) Navigator.pop(context);
+
+      if (file == null) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("No file selected"),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+        return;
+      }
+
+      if (context.mounted) {
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: AppColors.surface,
+            content: const Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text("Processing DOCX file..."),
+              ],
+            ),
+          ),
+        );
+      }
+
+      final questions = await DocxHelper.extractQuestionsFromDocx(file);
+
+      if (context.mounted) Navigator.pop(context);
+
+      if (questions.isNotEmpty) {
+        // Count how many questions have images
+        int imagesCount = questions
+            .where((q) => q['imageBase64'] != null)
+            .length;
+
+        await _saveQuestionsToSubjectCsv(questions, subjectCode);
+
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                "✅ Questions imported for $subjectCode!\n"
+                "Questions: ${questions.length} ($imagesCount with images)",
+              ),
+              backgroundColor: Colors.green,
+              duration: const Duration(seconds: 4),
+            ),
+          );
+        }
+      } else {
+        if (context.mounted) {
+          _showErrorDialog(
+            "Failed to extract questions from DOCX file.\n"
+            "Please ensure the file is properly formatted.",
+          );
+        }
+      }
+    } catch (e) {
+      if (context.mounted) Navigator.pop(context);
+      if (context.mounted) {
+        _showErrorDialog("Error importing file: $e");
+      }
+    }
+  }
+
+  Future<void> _saveQuestionsToSubjectCsv(
+    List<Map<String, dynamic>> questions,
+    String subjectCode,
+  ) async {
+    final questionBankFile = 'questions_${subjectCode.toLowerCase()}.csv';
+    final file = File(questionBankFile);
+
+    // Check if file exists to determine if we need header
+    final bool fileExists = await file.exists();
+
+    final List<List<dynamic>> csvRows = [];
+
+    for (var q in questions) {
+      csvRows.add([
+        q['type'] ?? 'OBJ',
+        _escapeCsvField(q['text'] ?? ''),
+        _escapeCsvField(q['optionA'] ?? ''),
+        _escapeCsvField(q['optionB'] ?? ''),
+        _escapeCsvField(q['optionC'] ?? ''),
+        _escapeCsvField(q['optionD'] ?? ''),
+        _escapeCsvField(q['answer'] ?? ''),
+        _escapeCsvField(q['imageBase64'] ?? ''), // CRITICAL: Add image column
+      ]);
+    }
+
+    if (!fileExists) {
+      // New file - write header with Image column
+      String header = "Type,Text,OptA,OptB,OptC,OptD,Answer,Image\n";
+      String csvData = CsvHelper.listToCsv(csvRows);
+      await file.writeAsString(header + csvData);
+      print("📝 Created new question bank with Image column for $subjectCode");
+    } else {
+      // Append to existing file
+      String csvData = CsvHelper.listToCsv(csvRows);
+      await file.writeAsString(
+        "\n$csvData",
+        mode: FileMode.append,
+        flush: true,
+      );
+      print("📝 Appended to existing question bank for $subjectCode");
+    }
+
+    // Count images saved
+    int imageCount = questions.where((q) => q['imageBase64'] != null).length;
+    print("✅ Saved ${questions.length} questions to $questionBankFile");
+    print("📸 Questions with images saved: $imageCount/${questions.length}");
+
+    // Update question count in server
+    QuizServer().updateQuestionCount(subjectCode, questions.length);
+  }
+
+  Widget _buildAvailableSessionsSection() {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 24),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                "Exam Sessions",
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              Row(
+                children: [
+                  // IconButton(
+                  //   icon: Icon(Icons.add_circle, color: AppColors.success),
+                  //   onPressed: _showCreateExamDialog,
+                  //   tooltip: "Create Exam Session",
+                  // ),
+                  if (_availableSessions.isNotEmpty)
+                    IconButton(
+                      icon: Icon(Icons.delete_sweep, color: AppColors.error),
+                      onPressed: _showClearAllSessionsDialog,
+                      tooltip: "Clear all sessions",
+                    ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+
+          // Custom sessions
+          if (_availableSessions.isEmpty)
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.all(40),
+                child: Column(
+                  children: [
+                    Icon(
+                      Icons.quiz_outlined,
+                      size: 64,
+                      color: AppColors.textMuted,
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      "No exam sessions created yet",
+                      style: TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 16,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      "Click the 'Create Exam Session' to create your first session",
+                      style: TextStyle(
+                        color: AppColors.textMuted,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          else
+            StreamBuilder<void>(
+              stream: QuizServer().subjectUpdateStream,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.active) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    _loadAvailableSessions();
+                  });
+                }
+
+                //I wrapped with sized box so the lsit buildr can be scrollable
+                return SizedBox(
+                  height: 200,
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    physics: const BouncingScrollPhysics(),
+                    itemCount: _availableSessions.length,
+                    itemBuilder: (context, index) {
+                      final session = _availableSessions[index];
+                      return SessionCard(
+                        session: session,
+                        onEdit: () => _showEditExamDialog(session),
+                        onViewStudents: () => _showViewEnrolledStudentsDialog(
+                          session['code'],
+                          session['title'],
+                        ),
+                        onViewQuestions: () => _showViewQuestionsDialog(
+                          session['code'],
+                          session['title'],
+                        ),
+                        onAddStudent: () => _showAddStudentToSessionDialog(
+                          session['code'],
+                          session['title'],
+                        ),
+                        onImportQuestions: () =>
+                            _importQuestionsForSubject(session['code']),
+                        onImportStudents: () => _showBulkImportStudentsDialog(
+                          session['code'],
+                          session['title'],
+                        ),
+                        onRemove: () => _showRemoveSessionDialog(session),
+                      );
+                    },
+                  ),
+                );
+              },
+            ),
+        ],
+      ),
+    );
   }
 
   Future<void> _loadStats() async {
@@ -87,148 +814,120 @@ class _AdminViewState extends State<AdminView> {
       finishedCount = lines.where((l) => l.trim().isNotEmpty).length - 1;
     }
 
-    int regCount = _registeredData
-        .where((r) => r.isNotEmpty && r[0].toString().toLowerCase() != 'matric')
-        .length;
-
     if (mounted) {
       setState(() {
         passedCount = stats.passed;
         failedCount = stats.failed;
         _submissionStatus =
-            "${finishedCount < 0 ? 0 : finishedCount} / $regCount";
+            "${finishedCount < 0 ? 0 : finishedCount} / $_totalStudents";
         avgScore = "${stats.avgScore.toStringAsFixed(1)}%";
       });
     }
   }
 
-  Future<void> _attemptLoadExistingRegistry() async {
-    final file = File('registered_students.csv');
-    if (await file.exists()) {
-      final csvString = await file.readAsString();
-      final parsed = CsvHelper.parseCsv(
-        csvString,
-      ).map((row) => row as List<dynamic>).toList();
-      setState(() {
-        _registeredData = parsed;
-      });
-    }
+  void _showCreateExamDialog() {
+    _subjectCodeController.clear();
+    _subjectTitleController.clear();
+    _subjectDurationController.clear();
+    _subjectQuestionLimitController.clear();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        title: const Text(
+          "Create Exam Session",
+          style: TextStyle(color: AppColors.textPrimary),
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _entryField(
+                _subjectCodeController,
+                "Subject Code (e.g., MATH101)",
+                Icons.code,
+              ),
+              const SizedBox(height: 12),
+              _entryField(_subjectTitleController, "Course Title", Icons.book),
+              const SizedBox(height: 12),
+              _entryField(
+                _subjectDurationController,
+                "Duration (minutes)",
+                Icons.timer,
+              ),
+              const SizedBox(height: 12),
+              _entryField(
+                _subjectQuestionLimitController,
+                "Question Limit",
+                Icons.list,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(
+              "CANCEL",
+              style: TextStyle(color: AppColors.textSecondary),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: _createExamSession,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.success,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text("CREATE SESSION"),
+          ),
+        ],
+      ),
+    );
   }
 
-  Future<void> _refreshQuestionBank() async {
-    try {
-      final file = File('questions.csv');
-      if (!await file.exists()) {
-        print("questions.csv not found");
-        return;
-      }
+  void _createExamSession() {
+    QuizServer().createExamSession(
+      subjectCode: _subjectCodeController.text.trim(),
+      courseTitle: _subjectTitleController.text.trim(),
+      duration: int.tryParse(_subjectDurationController.text) ?? 30,
+      questionLimit: int.tryParse(_subjectQuestionLimitController.text) ?? 40,
+    );
 
-      // Try multiple encodings
-      String csvString;
-      try {
-        // First try UTF-8
-        csvString = await file.readAsString(encoding: utf8);
-      } catch (e) {
-        try {
-          // Try with UTF-8 that might have BOM
-          final bytes = await file.readAsBytes();
-          if (bytes.length >= 3 &&
-              bytes[0] == 0xEF &&
-              bytes[1] == 0xBB &&
-              bytes[2] == 0xBF) {
-            // Skip BOM
-            csvString = utf8.decode(bytes.skip(3).toList());
-          } else {
-            // Try as Latin-1 (Windows-1252)
-            csvString = latin1.decode(bytes);
-          }
-        } catch (e2) {
-          print("Error decoding file: $e2");
-          return;
-        }
-      }
+    Navigator.pop(context);
+    _loadAvailableSessions();
 
-      final allRows = CsvHelper.parseCsv(
-        csvString,
-      ).map((row) => row as List<dynamic>).toList();
-
-      setState(() {
-        _uploadedQuestions = allRows;
-        if (allRows.isNotEmpty) {
-          if (allRows[0][0].toString().toLowerCase() == 'type') {
-            _totalQuestionsAvailable = allRows.length - 1;
-          } else {
-            _totalQuestionsAvailable = allRows.length;
-          }
-        } else {
-          _totalQuestionsAvailable = 0;
-        }
-      });
-
-      print("✅ Loaded ${_totalQuestionsAvailable} questions");
-    } catch (e) {
-      debugPrint("Error refreshing bank: $e");
-    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          "✅ Exam session created for ${_subjectCodeController.text}\n"
+          "Question bank: questions_${_subjectCodeController.text.toLowerCase()}.csv",
+        ),
+        backgroundColor: AppColors.success,
+        duration: const Duration(seconds: 4),
+      ),
+    );
   }
 
-  Future<void> _processWordContent(String rawText) async {
-    List<String> lines = rawText.split(RegExp(r'\r\n|\n|\r'));
-    List<List<dynamic>> newQuestions = [];
-
-    String currentQ = "";
-    String a = "", b = "", c = "", d = "", ans = "";
-
-    for (String line in lines) {
-      String cleanLine = line.trim();
-      if (cleanLine.isEmpty) continue;
-
-      if (RegExp(r'^\d+[\.\)]').hasMatch(cleanLine)) {
-        if (currentQ.isNotEmpty) {
-          newQuestions.add(["OBJ", currentQ, a, b, c, d, ans]);
-        }
-        currentQ = cleanLine.replaceFirst(RegExp(r'^\d+[\.\)]'), '').trim();
-        a = "";
-        b = "";
-        c = "";
-        d = "";
-        ans = "";
-      } else if (cleanLine.toUpperCase().startsWith(RegExp(r'[A-D][\.\)]'))) {
-        String content = cleanLine.substring(2).trim();
-        String letter = cleanLine[0].toUpperCase();
-        if (letter == 'A') {
-          a = content;
-        } else if (letter == 'B')
-          b = content;
-        else if (letter == 'C')
-          c = content;
-        else if (letter == 'D')
-          d = content;
-      } else if (cleanLine.toUpperCase().contains('ANS:')) {
-        ans = cleanLine.split(':').last.trim().toUpperCase();
-      }
+  String _escapeCsvField(String field) {
+    // Base64 strings are long and may contain special characters
+    if (field.contains(',') ||
+        field.contains('"') ||
+        field.contains('\n') ||
+        field.length > 100) {
+      // Escape quotes by doubling them and wrap in quotes
+      return '"${field.replaceAll('"', '""')}"';
     }
-
-    if (currentQ.isNotEmpty) {
-      newQuestions.add(["OBJ", currentQ, a, b, c, d, ans]);
-    }
-
-    final file = File('questions.csv');
-    if (!await file.exists()) {
-      await file.writeAsString("Type,Text,OptA,OptB,OptC,OptD,Answer\n");
-    }
-
-    String csvData = CsvHelper.listToCsv(newQuestions);
-    await file.writeAsString("$csvData\n", mode: FileMode.append, flush: true);
-
-    await _refreshQuestionBank();
+    return field;
   }
 
   void _showErrorDialog(String message) {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text("Error", style: TextStyle(color: Colors.red)),
-        content: Text(message),
+        backgroundColor: AppColors.surface,
+        title: const Text("Error", style: TextStyle(color: AppColors.error)),
+        content: Text(message, style: TextStyle(color: AppColors.textPrimary)),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
@@ -239,758 +938,155 @@ class _AdminViewState extends State<AdminView> {
     );
   }
 
-  Future<void> _importDocxDocument() async {
-    try {
-      // Show loading dialog
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (ctx) => const AlertDialog(
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CircularProgressIndicator(),
-              SizedBox(height: 16),
-              Text("Selecting file..."),
-            ],
-          ),
-        ),
-      );
-
-      // Pick DOCX file
-      final file = await FilePickerHelper.pickDocxFile();
-
-      // Close loading dialog
-      if (context.mounted) Navigator.pop(context);
-
-      if (file == null) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text("No file selected"),
-              backgroundColor: Colors.orange,
-            ),
-          );
-        }
-        return;
-      }
-
-      // Get file size BEFORE showing dialog
-      final fileSize = await FilePickerHelper.getFileSize(file);
-      final fileName = FilePickerHelper.getFileName(file.path);
-
-      // Show processing dialog
-      if (context.mounted) {
-        showDialog(
-          context: context,
-          barrierDismissible: false,
-          builder: (ctx) => AlertDialog(
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const CircularProgressIndicator(),
-                const SizedBox(height: 16),
-                Text("Processing $fileName..."),
-                const SizedBox(height: 8),
-                Text("Size: $fileSize", style: const TextStyle(fontSize: 12)),
-              ],
-            ),
-          ),
-        );
-      }
-
-      // Extract content from DOCX
-      final content = await DocxHelper.extractTextFromDocx(file);
-
-      // Close processing dialog
-      if (context.mounted) Navigator.pop(context);
-
-      if (content != null) {
-        await _processWordContent(content);
-
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                "✅ DOCX file imported successfully!\n"
-                "File: $fileName",
-              ),
-              backgroundColor: Colors.green,
-              duration: const Duration(seconds: 4),
-            ),
-          );
-        }
-      } else {
-        if (context.mounted) {
-          _showErrorDialog(
-            "Failed to extract content from DOCX file.\n"
-            "Please ensure the file is a valid Word document.",
-          );
-        }
-      }
-    } catch (e) {
-      // Make sure to close any open dialogs
-      if (context.mounted) Navigator.pop(context);
-
-      if (context.mounted) {
-        _showErrorDialog("Error importing file: $e");
-      }
-    }
-  }
-
-  Future<void> _saveSingleQuestion() async {
-    final newQ = [
-      [
-        "OBJ",
-        _qTextController.text,
-        _optA.text,
-        _optB.text,
-        _optC.text,
-        _optD.text,
-        _ansController.text.toUpperCase(),
-      ],
-    ];
-    final file = File('questions.csv');
-    if (!await file.exists()) {
-      await file.writeAsString("Type,Text,OptA,OptB,OptC,OptD,Answer\n");
-    }
-    String csvRow = "${CsvHelper.listToCsv(newQ)}\n";
-    await file.writeAsString(csvRow, mode: FileMode.append, flush: true);
-
-    _qTextController.clear();
-    _optA.clear();
-    _optB.clear();
-    _optC.clear();
-    _optD.clear();
-    _ansController.clear();
-    await _refreshQuestionBank();
-    Navigator.pop(context);
-  }
-
-  void _confirmDeleteAllQuestions() {
+  Future<void> _executeKillSwitch() async {
     showDialog(
       context: context,
+      barrierDismissible: false,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E293B),
-        title: const Text(
-          "Wipe Question Bank?",
-          style: TextStyle(color: Colors.white),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text("CANCEL"),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              final file = File('questions.csv');
-              await file.writeAsString(
-                "Type,Text,OptA,OptB,OptC,OptD,Answer\n",
-              );
-              await _refreshQuestionBank();
-              Navigator.pop(ctx);
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-            child: const Text("DELETE ALL"),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _importRegistry() async {
-    try {
-      // Show loading dialog
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (ctx) => const AlertDialog(
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CircularProgressIndicator(),
-              SizedBox(height: 16),
-              Text("Selecting CSV file..."),
-            ],
-          ),
-        ),
-      );
-
-      // Pick CSV file
-      final file = await FilePickerHelper.pickCsvFile();
-
-      // Close loading dialog
-      if (context.mounted) Navigator.pop(context);
-
-      if (file == null) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text("No file selected"),
-              backgroundColor: Colors.orange,
-            ),
-          );
-        }
-        return;
-      }
-
-      final fileName = FilePickerHelper.getFileName(file.path);
-
-      // Show processing dialog
-      if (context.mounted) {
-        showDialog(
-          context: context,
-          barrierDismissible: false,
-          builder: (ctx) => AlertDialog(
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const CircularProgressIndicator(),
-                const SizedBox(height: 16),
-                Text("Processing $fileName..."),
-              ],
-            ),
-          ),
-        );
-      }
-
-      // Read file content
-      final content = await file.readAsString();
-
-      // Parse CSV
-      final parsed = CsvHelper.parseCsv(
-        content,
-      ).map((row) => row as List<dynamic>).toList();
-
-      // Validate CSV structure
-      if (parsed.isNotEmpty && parsed[0].length >= 3) {
-        // Optionally save a copy locally
-        final localFile = File('registered_students.csv');
-        await localFile.writeAsString(content);
-
-        setState(() {
-          _registeredData = parsed;
-        });
-
-        // Close processing dialog
-        if (context.mounted) Navigator.pop(context);
-
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                "✅ Student Registry Updated!\n"
-                "${parsed.length - 1} students loaded from $fileName",
-              ),
-              backgroundColor: Colors.green,
-              duration: const Duration(seconds: 4),
-            ),
-          );
-        }
-      } else {
-        if (context.mounted) Navigator.pop(context);
-        if (context.mounted) {
-          _showErrorDialog(
-            "Invalid CSV format.\n"
-            "Please ensure the file has headers: Matric,Surname,Firstname",
-          );
-        }
-      }
-    } catch (e) {
-      // Make sure to close any open dialogs
-      if (context.mounted) Navigator.pop(context);
-
-      if (context.mounted) {
-        _showErrorDialog("Error importing registry: $e");
-      }
-    }
-  }
-
-  Widget _statCard(String title, String val, IconData icon, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1E293B),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: color.withOpacity(0.3), width: 1),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.start,
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          CircleAvatar(
-            radius: 20,
-            backgroundColor: color.withOpacity(0.1),
-            child: Icon(icon, color: color, size: 20),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  val,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  title,
-                  style: TextStyle(
-                    color: Colors.white.withOpacity(0.6),
-                    fontSize: 11,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildPerformanceChart() {
-    return Container(
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1E293B),
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            "Exam Performance",
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 30),
-          SizedBox(
-            height: 180,
-            child: BarChart(
-              BarChartData(
-                alignment: BarChartAlignment.spaceAround,
-                maxY: (passedCount + failedCount == 0)
-                    ? 10
-                    : (passedCount + failedCount + 2).toDouble(),
-                barGroups: [
-                  BarChartGroupData(
-                    x: 0,
-                    barRods: [
-                      BarChartRodData(
-                        toY: passedCount.toDouble(),
-                        color: Colors.greenAccent,
-                        width: 30,
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                    ],
-                  ),
-                  BarChartGroupData(
-                    x: 1,
-                    barRods: [
-                      BarChartRodData(
-                        toY: failedCount.toDouble(),
-                        color: Colors.redAccent,
-                        width: 30,
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                    ],
-                  ),
-                ],
-                titlesData: FlTitlesData(
-                  leftTitles: const AxisTitles(
-                    sideTitles: SideTitles(showTitles: true, reservedSize: 30),
-                  ),
-                  bottomTitles: AxisTitles(
-                    sideTitles: SideTitles(
-                      showTitles: true,
-                      getTitlesWidget: (value, meta) {
-                        return Text(
-                          value == 0 ? "PASS" : "FAIL",
-                          style: const TextStyle(
-                            color: Colors.grey,
-                            fontSize: 12,
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                  topTitles: const AxisTitles(
-                    sideTitles: SideTitles(showTitles: false),
-                  ),
-                  rightTitles: const AxisTitles(
-                    sideTitles: SideTitles(showTitles: false),
-                  ),
-                ),
-                gridData: const FlGridData(show: false),
-                borderData: FlBorderData(show: false),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildLiveLogSection() {
-    return Container(
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1E293B),
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            "Live Activity Log",
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const SizedBox(height: 15),
-          SizedBox(
-            height: 200,
-            child: StreamBuilder<List<String>>(
-              stream: QuizServer().studentStream,
-              initialData: QuizServer.connectedClients,
-              builder: (context, snapshot) {
-                final clients = snapshot.data ?? [];
-                if (clients.isEmpty) {
-                  return const Center(
-                    child: Text(
-                      "No active students",
-                      style: TextStyle(color: Colors.grey),
-                    ),
-                  );
-                }
-                return ListView.builder(
-                  itemCount: clients.length,
-                  itemBuilder: (ctx, i) {
-                    bool isFinished = clients[i].contains("FINISHED");
-                    return ListTile(
-                      leading: Icon(
-                        isFinished ? Icons.check_circle : Icons.person_pin,
-                        color: isFinished
-                            ? Colors.greenAccent
-                            : Colors.blueAccent,
-                      ),
-                      title: Text(
-                        clients[i],
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 13,
-                        ),
-                      ),
-                    );
-                  },
-                );
-              },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildQuestionBankSection() {
-    List<List<dynamic>> displayList = [];
-
-    if (_uploadedQuestions.isNotEmpty) {
-      if (_uploadedQuestions[0][0].toString().toLowerCase() == "type") {
-        displayList = _uploadedQuestions.sublist(1);
-      } else {
-        displayList = _uploadedQuestions;
-      }
-    }
-    return Container(
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1E293B),
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text(
-                "Live Question Bank",
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              Text(
-                "${displayList.length} Questions Loaded",
-                style: const TextStyle(color: Colors.grey, fontSize: 12),
-              ),
-              IconButton(
-                icon: const Icon(Icons.delete_sweep, color: Colors.redAccent),
-                onPressed: _confirmDeleteAllQuestions,
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          if (displayList.isEmpty)
-            const Center(
-              child: Padding(
-                padding: EdgeInsets.all(20),
-                child: Text(
-                  "No questions found.",
-                  style: TextStyle(color: Colors.grey),
-                ),
-              ),
-            )
-          else
-            SizedBox(
-              height: 350,
-              child: ListView.builder(
-                itemCount: displayList.length,
-                itemBuilder: (ctx, i) {
-                  final qRow = displayList[i];
-                  if (qRow.length < 7) return const SizedBox.shrink();
-
-                  return Card(
-                    margin: const EdgeInsets.only(bottom: 8),
-                    color: Colors.white.withOpacity(0.05),
-                    child: ListTile(
-                      leading: CircleAvatar(
-                        radius: 12,
-                        backgroundColor: Colors.blueAccent,
-                        child: Text(
-                          "${i + 1}",
-                          style: const TextStyle(
-                            fontSize: 10,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ),
-                      title: Text(
-                        qRow[1].toString(),
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 13,
-                        ),
-                      ),
-                      subtitle: Text(
-                        "A: ${qRow[2]} | B: ${qRow[3]} | C: ${qRow[4]} | D: ${qRow[5]}",
-                        style: const TextStyle(
-                          color: Colors.grey,
-                          fontSize: 11,
-                        ),
-                      ),
-                      trailing: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.blueAccent.withOpacity(0.2),
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Text(
-                          "Ans: ${qRow[6]}",
-                          style: const TextStyle(
-                            color: Colors.blueAccent,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildRegisteredStudentsSection() {
-    final rows = _registeredData
-        .where((r) => r.isNotEmpty && r[0].toString().toLowerCase() != 'matric')
-        .toList();
-
-    return Container(
-      padding: const EdgeInsets.all(24),
-      margin: const EdgeInsets.only(top: 32),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1E293B),
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text(
-                "Registered Students Registry",
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              Text(
-                "${rows.length} Students Total",
-                style: const TextStyle(color: Colors.grey),
-              ),
-            ],
-          ),
-          const SizedBox(height: 15),
-          if (rows.isEmpty)
-            const Center(
-              child: Padding(
-                padding: EdgeInsets.all(20),
-                child: Text(
-                  "No students registered. Use 'Bulk Student Upload' to add them.",
-                  style: TextStyle(color: Colors.grey),
-                ),
-              ),
-            )
-          else
-            ListView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: rows.length,
-              itemBuilder: (context, index) {
-                final r = rows[index];
-                return Container(
-                  margin: const EdgeInsets.only(bottom: 8),
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.05),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(
-                        Icons.person,
-                        color: Colors.blueAccent,
-                        size: 16,
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        flex: 2,
-                        child: Text(
-                          r[0].toString(),
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                      Expanded(
-                        flex: 3,
-                        child: Text(
-                          "${r[1]} ${r[2]}",
-                          style: const TextStyle(color: Colors.grey),
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              },
-            ),
-        ],
-      ),
-    );
-  }
-
-  void _showConfigDialog() {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E293B),
-        title: const Text(
-          "Exam Configuration",
-          style: TextStyle(color: Colors.white),
-        ),
+        backgroundColor: AppColors.surface,
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _entryField(_courseController, "Course Title", Icons.book),
-            _entryField(_timerController, "Time (Mins)", Icons.timer),
-            _entryField(_qCountController, "Question Limit", Icons.list),
+            const CircularProgressIndicator(),
+            const SizedBox(height: 16),
+            Text(
+              "Executing Kill Switch...",
+              style: TextStyle(color: AppColors.textPrimary),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              "Resetting all systems",
+              style: TextStyle(color: AppColors.textMuted, fontSize: 12),
+            ),
           ],
         ),
-        actions: [
-          ElevatedButton(
-            onPressed: () {
-              QuizServer().updateAdminConfig(
-                _courseController.text,
-                _timerController.text,
-                int.tryParse(_qCountController.text) ?? 50,
-              );
-              setState(() {});
-              Navigator.pop(ctx);
-            },
-            child: const Text("SAVE"),
-          ),
-        ],
       ),
     );
+
+    try {
+      if (isLive) {
+        await QuizServer().stop();
+      }
+
+      setState(() {
+        passedCount = 0;
+        failedCount = 0;
+        avgScore = "0%";
+        _submissionStatus = "0 / 0";
+        _passTrendData = [0, 0, 0, 0, 0];
+        _failTrendData = [0, 0, 0, 0, 0];
+        _trendLabels = ['-5m', '-4m', '-3m', '-2m', 'now'];
+        isLive = false;
+        ip = "Offline";
+      });
+
+      // Clear results file
+      final resultsFile = File('quiz_results.csv');
+      if (await resultsFile.exists()) {
+        await resultsFile.writeAsString(
+          "Timestamp,Matric,Surname,Firstname,Subject,Obj Correct,Total Obj,Typed Correct,Total Typed,Theory Answered,Total Theory,Score(%)\n",
+        );
+      }
+
+      // Clear all exam sessions and student data
+      QuizServer()
+          .clearAllSessions(); // This already clears subjects and student enrollments
+
+      // Also clear registered_students.csv file
+      final registeredFile = File('registered_students.csv');
+      if (await registeredFile.exists()) {
+        await registeredFile.writeAsString("Matric,Surname,Firstname,Class\n");
+      }
+
+      // Clear any leftover session CSV files
+      final directory = Directory.current;
+      final files = directory.listSync();
+      for (var file in files) {
+        if (file is File) {
+          final filename = file.path.split(Platform.pathSeparator).last;
+          // Delete any questions_*.csv files that might be left
+          if (filename.startsWith('questions_') && filename.endsWith('.csv')) {
+            try {
+              await file.delete();
+              print("🗑️ Deleted leftover file: $filename");
+            } catch (e) {
+              print("⚠️ Could not delete $filename: $e");
+            }
+          }
+        }
+      }
+
+      // Clear student list in server
+      QuizServer().clearStudentList();
+
+      if (context.mounted) Navigator.pop(context);
+
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.check_circle, color: Colors.white),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: const [
+                      Text(
+                        "Kill Switch Executed",
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
+                      ),
+                      Text(
+                        "All systems, files, and data have been reset",
+                        style: TextStyle(color: Colors.white70, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            backgroundColor: AppColors.success,
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+
+      _loadAvailableSessions();
+      print("✅ Kill switch executed successfully - all data cleared");
+    } catch (e) {
+      if (context.mounted) Navigator.pop(context);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Error executing kill switch: $e"),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+      print("❌ Kill switch error: $e");
+    }
   }
 
-  void _showAddQuestionDialog() {
+  void _confirmKillSwitch() {
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E293B),
-        title: const Text("Manual Add", style: TextStyle(color: Colors.white)),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _entryField(_qTextController, "Question", Icons.help),
-              _entryField(_optA, "Option A", Icons.circle_outlined),
-              _entryField(_optB, "Option B", Icons.circle_outlined),
-              _entryField(_optC, "Option C", Icons.circle_outlined),
-              _entryField(_optD, "Option D", Icons.circle_outlined),
-              _entryField(
-                _ansController,
-                "Answer (A, B, C, or D)",
-                Icons.check,
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          ElevatedButton(
-            onPressed: _saveSingleQuestion,
-            child: const Text("SAVE QUESTION"),
-          ),
+      builder: (ctx) => ConfirmDialog(
+        title: "⚠️ KILL SWITCH",
+        message: "This will RESET EVERYTHING:",
+        items: [
+          "Clear all statistics (pass/fail counts, averages)",
+          "Reset performance trend",
+          "Clear submission status",
+          "Remove all exam sessions",
+          "Clear student registry",
+          "Stop server if running",
         ],
-      ),
-    );
-  }
-
-  Widget _entryField(TextEditingController ctrl, String label, IconData icon) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: TextField(
-        controller: ctrl,
-        style: const TextStyle(color: Colors.white),
-        decoration: InputDecoration(
-          labelText: label,
-          labelStyle: const TextStyle(color: Colors.grey),
-          prefixIcon: Icon(icon, color: Colors.blueAccent),
-          enabledBorder: const OutlineInputBorder(
-            borderSide: BorderSide(color: Colors.white12),
-          ),
-        ),
+        onConfirm: _executeKillSwitch,
+        confirmColor: AppColors.error,
       ),
     );
   }
@@ -1002,10 +1098,10 @@ class _AdminViewState extends State<AdminView> {
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              _courseController.text.toUpperCase(),
-              style: const TextStyle(
-                color: Colors.white,
+            const Text(
+              "ADMIN DASHBOARD",
+              style: TextStyle(
+                color: AppColors.textPrimary,
                 fontSize: 28,
                 fontWeight: FontWeight.bold,
               ),
@@ -1015,27 +1111,105 @@ class _AdminViewState extends State<AdminView> {
                 Text(
                   isLive ? "SERVER LIVE: " : "SERVER OFFLINE",
                   style: TextStyle(
-                    color: isLive ? Colors.greenAccent : Colors.redAccent,
+                    color: isLive ? AppColors.success : AppColors.error,
                     fontSize: 14,
                     fontWeight: FontWeight.bold,
                   ),
                 ),
-                if (isLive)
+                if (isLive) ...[
                   SelectableText(
                     "http://$ip:8080",
                     style: const TextStyle(
-                      color: Colors.blueAccent,
+                      color: AppColors.darkAccent,
                       fontSize: 14,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    icon: const Icon(Icons.copy, size: 18),
+                    color: AppColors.darkAccent,
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(text: "http://$ip:8080"));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text("Address copied to clipboard"),
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    },
+                  ),
+                ],
               ],
             ),
           ],
         ),
-        const CircleAvatar(
-          backgroundColor: Colors.indigo,
-          child: Icon(Icons.admin_panel_settings, color: Colors.white),
+        Row(
+          children: [
+            if (isLive)
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: AppColors.warning.withAlpha(26),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: AppColors.warning.withAlpha(77)),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: AppColors.warning,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      "LIVE",
+                      style: TextStyle(
+                        color: AppColors.warning,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            const SizedBox(width: 16),
+            Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.error.withAlpha(51),
+                    blurRadius: 20,
+                    spreadRadius: 0,
+                  ),
+                ],
+              ),
+              child: ElevatedButton.icon(
+                onPressed: _confirmKillSwitch,
+                icon: const Icon(Icons.power_settings_new, size: 20),
+                label: const Text("KILL SWITCH"),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.error,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 24,
+                    vertical: 16,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  elevation: 0,
+                ),
+              ),
+            ),
+          ],
         ),
       ],
     );
@@ -1043,70 +1217,61 @@ class _AdminViewState extends State<AdminView> {
 
   Widget _buildSidebar() {
     return Container(
-      width: 240,
-      color: const Color(0xFF1E293B),
+      width: 200,
+      margin: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+      decoration: BoxDecoration(
+        border: Border.all(width: 0.2),
+        borderRadius: BorderRadius.circular(28),
+      ),
       child: Column(
         children: [
-          const SizedBox(height: 50),
+          const SizedBox(height: 16),
+          Column(
+            children: [
+              Text(
+                'CBT',
+                style: TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 28,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1,
+                ),
+              ),
+              const Text(
+                'Computer Based Test',
+                style: TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: 0.5,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+
           _sidebarItem(Icons.dashboard, "Dashboard", true),
+          // Removed Exam Config, Create Exam Session, Add Single Question, Import Question DOCX
+          // Add Single Student, Bulk Student Upload from sidebar
           _sidebarItem(
-            Icons.settings,
-            "Exam Config",
+            Icons.add_box_rounded,
+            "Create Exam Session",
             false,
-            onTap: _showConfigDialog,
-          ),
-          _sidebarItem(
-            Icons.add_box,
-            "Add Single Q",
-            false,
-            onTap: _showAddQuestionDialog,
-          ),
-          // _sidebarItem(
-          //   Icons.description,
-          //   "Word Transformer",
-          //   false,
-          //   onTap: _importWordDocument,
-          // ),
-          _sidebarItem(
-            Icons.description,
-            "Import DOCX File", // Changed from "Import Text File"
-            false,
-            onTap: _importDocxDocument,
-          ),
-          _sidebarItem(
-            Icons.group_add,
-            "Bulk Student Upload",
-            false,
-            onTap: _importRegistry,
+            onTap: () => _showCreateExamDialog(),
           ),
           _sidebarItem(
             Icons.assessment,
-            "Final Report (CSV)",
+            "Download Results",
             false,
-            onTap: () async {
-              String message = await resultService.downloadCsvReport(
-                "CBT_Exam_Results",
-              );
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(message),
-                  backgroundColor: Colors.blueGrey[800],
-                  duration: const Duration(seconds: 8),
-                  action: SnackBarAction(
-                    label: "OPEN FOLDER",
-                    textColor: Colors.blueAccent,
-                    onPressed: () async {
-                      final dir = await PathHelper.getDownloadsDirectory();
-                      if (dir != null) {
-                        Process.run('explorer.exe', [dir]);
-                      }
-                    },
-                  ),
-                ),
+            onTap: () {
+              showDialog(
+                context: context,
+                builder: (ctx) => const DownloadResultsDialog(),
               );
             },
           ),
           const Spacer(),
+          buildCreditCard(context: context),
           _serverControlPanel(),
         ],
       ),
@@ -1119,13 +1284,29 @@ class _AdminViewState extends State<AdminView> {
     bool active, {
     VoidCallback? onTap,
   }) {
-    return ListTile(
-      leading: Icon(icon, color: active ? Colors.blueAccent : Colors.grey),
-      title: Text(
-        label,
-        style: TextStyle(color: active ? Colors.white : Colors.grey),
-      ),
+    return InkWell(
       onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: active ? AppColors.darkPrimary : Colors.transparent,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, color: active ? AppColors.surface : Colors.grey),
+            const SizedBox(width: 8),
+            Text(
+              label,
+              style: TextStyle(
+                color: active ? Colors.white : Colors.grey,
+                fontSize: 12,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -1134,7 +1315,7 @@ class _AdminViewState extends State<AdminView> {
       padding: const EdgeInsets.all(20),
       child: ElevatedButton(
         style: ElevatedButton.styleFrom(
-          backgroundColor: isLive ? Colors.redAccent : Colors.greenAccent,
+          backgroundColor: isLive ? AppColors.error : AppColors.pass,
           minimumSize: const Size(double.infinity, 50),
         ),
         onPressed: () async {
@@ -1175,7 +1356,7 @@ class _AdminViewState extends State<AdminView> {
         child: Text(
           isLive ? "STOP EXAM" : "START EXAM",
           style: const TextStyle(
-            color: Colors.black,
+            color: AppColors.surfaceLight,
             fontWeight: FontWeight.bold,
           ),
         ),
@@ -1183,10 +1364,60 @@ class _AdminViewState extends State<AdminView> {
     );
   }
 
+  Widget _entryField(
+    TextEditingController ctrl,
+    String label,
+    IconData icon, {
+    bool enabled = true,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: TextField(
+        controller: ctrl,
+        enabled: enabled,
+        style: const TextStyle(color: AppColors.darkPrimary),
+        decoration: InputDecoration(
+          labelText: label,
+          labelStyle: const TextStyle(color: Colors.grey),
+          prefixIcon: Icon(icon, color: AppColors.darkPrimary),
+          enabledBorder: const OutlineInputBorder(
+            borderSide: BorderSide(color: AppColors.darkPrimary),
+          ),
+          disabledBorder: const OutlineInputBorder(
+            borderSide: BorderSide(color: AppColors.border),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTrendChart() {
+    return Container(
+      child: Column(
+        children: [
+          const SizedBox(height: 32),
+          TrendChart(
+            passData: _passTrendData.isEmpty
+                ? [0, 0, 0, 0, 0, 0]
+                : _passTrendData,
+            failData: _failTrendData.isEmpty
+                ? [0, 0, 0, 0, 0, 0]
+                : _failTrendData,
+            labels: _trendLabels.isEmpty
+                ? ['-5m', '-4m', '-3m', '-2m', '-1m', 'now']
+                : _trendLabels,
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    int totalStudents = QuizServer().getStudents().length;
+
     return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
+      backgroundColor: AppColors.surfaceLight,
       body: Row(
         children: [
           _buildSidebar(),
@@ -1198,57 +1429,54 @@ class _AdminViewState extends State<AdminView> {
                 children: [
                   _buildHeader(),
                   const SizedBox(height: 32),
-                  GridView.count(
-                    crossAxisCount: 3,
-                    shrinkWrap: true,
-                    crossAxisSpacing: 20,
-                    mainAxisSpacing: 20,
-                    childAspectRatio: 2.2,
-                    children: [
-                      _statCard(
-                        "Registered",
-                        "${_registeredData.where((r) => r.isNotEmpty && r[0].toString().toLowerCase() != 'matric').length}",
-                        Icons.people,
-                        Colors.blue,
-                      ),
-                      _statCard(
-                        "Finished",
-                        "${passedCount + failedCount}",
-                        Icons.check_circle,
-                        Colors.green,
-                      ),
-                      _statCard(
-                        "Avg. Score",
-                        avgScore,
-                        Icons.analytics,
-                        Colors.purple,
-                      ),
-                      _statCard(
-                        "Question Bank",
-                        "$_totalQuestionsAvailable",
-                        Icons.library_books,
-                        Colors.orange,
-                      ),
-                      _statCard(
-                        "Submission Status",
-                        _submissionStatus,
-                        Icons.check_circle,
-                        Colors.green,
-                      ),
-                    ],
+
+                  SizedBox(
+                    height: 632,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.start,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          flex: 3,
+                          child: Column(
+                            children: [
+                              StatsCards(
+                                registeredCount: totalStudents,
+                                finishedCount: passedCount + failedCount,
+                                avgScore: avgScore,
+                                // In _buildAvailableSessionsSection method, update the fold function
+                                totalQuestions: _availableSessions.fold<int>(
+                                  0,
+                                  (sum, session) =>
+                                      sum +
+                                      ((session['questionCount'] as num?)
+                                              ?.toInt() ??
+                                          0),
+                                ),
+                                submissionStatus: _submissionStatus,
+                              ),
+                              _buildTrendChart(),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 26),
+                        SizedBox(
+                          width: 300,
+                          child: Column(
+                            children: [
+                              // Exam Sessions Section (replaces default sections)
+                              _buildAvailableSessionsSection(),
+                              const LiveLogSection(),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                   const SizedBox(height: 32),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(flex: 2, child: _buildPerformanceChart()),
-                      const SizedBox(width: 20),
-                      Expanded(flex: 3, child: _buildLiveLogSection()),
-                    ],
-                  ),
-                  const SizedBox(height: 32),
-                  _buildQuestionBankSection(),
-                  _buildRegisteredStudentsSection(),
+
+                  // Default Question Bank Section Removed
+                  // Registered Students Section Removed
                 ],
               ),
             ),

@@ -1,10 +1,14 @@
 import 'package:cbtapp/providers/quiz_provider.dart';
 import 'package:cbtapp/views/student/student_quiz_view.dart';
+import 'package:cbtapp/views/student/widgets/login_screen.dart';
+import 'package:cbtapp/views/student/widgets/waiting_room.dart';
 import 'package:cbtapp/utils/csv_helper.dart';
+import 'package:cbtapp/widgets/server_connection_widget.dart'; // Add this import
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:math';
 
 class StudentView extends ConsumerStatefulWidget {
   const StudentView({super.key});
@@ -16,7 +20,6 @@ class StudentView extends ConsumerStatefulWidget {
 class _StudentViewState extends ConsumerState<StudentView> {
   final _matricController = TextEditingController();
   final _surnameController = TextEditingController();
-
   bool _isLoading = false;
   Map<String, dynamic>? _studentData;
 
@@ -51,12 +54,16 @@ class _StudentViewState extends ConsumerState<StudentView> {
     setState(() => _isLoading = true);
 
     try {
-      final serverIp = Uri.base.host;
+      final serverIp = Uri.base.host.isEmpty ? "localhost" : Uri.base.host;
       final response = await http
           .post(
             Uri.parse('http://$serverIp:8080/api/login'),
             headers: {"Content-Type": "application/json"},
-            body: jsonEncode({'matric': matric, 'surname': surname}),
+            body: jsonEncode({
+              'matric': matric,
+              'surname': surname,
+              // No subject field - server determines from enrollment
+            }),
           )
           .timeout(const Duration(seconds: 5));
 
@@ -81,6 +88,7 @@ class _StudentViewState extends ConsumerState<StudentView> {
             'durationRaw': int.parse(config['duration']),
             'durationDisplay': "${config['duration']} Minutes",
             'limit': config['totalToAnswer'],
+            'subjectCode': config['subjectCode'],
           };
         });
       } else {
@@ -98,31 +106,51 @@ class _StudentViewState extends ConsumerState<StudentView> {
   Future<void> _fetchQuestionsAndStart() async {
     setState(() => _isLoading = true);
     try {
-      final serverIp = Uri.base.host.isEmpty ? "192.168.1.5" : Uri.base.host;
+      final serverIp = Uri.base.host.isEmpty ? "localhost" : Uri.base.host;
 
-      final response = await http.get(
-        Uri.parse('http://$serverIp:8080/questions.csv'),
-      );
+      // Must have subject code - no default fallback
+      final subjectCode = _studentData!['subjectCode'];
+      final url = 'http://$serverIp:8080/questions.csv?subject=$subjectCode';
+
+      final response = await http.get(Uri.parse(url));
 
       if (response.statusCode == 200) {
         final csvString = response.body;
-        final rows = CsvHelper.parseCsv(csvString).map((row) => row as List<dynamic>).toList();
+        final rows = CsvHelper.parseCsv(csvString);
 
         List<Map<String, dynamic>> allQuestions = rows
-            .skip(1)
+            .skip(1) // Skip header
             .where((r) => r.length >= 7)
-            .map(
-              (r) => {
+            .map((r) {
+              // Check if there's an image column (index 7)
+              String? imageBase64;
+              if (r.length > 7 && r[7].toString().isNotEmpty) {
+                imageBase64 = r[7].toString();
+                print(
+                  "📸 Found image for question: ${r[1].toString().substring(0, min(30, r[1].toString().length))}...",
+                );
+              }
+
+              return {
                 'type': r[0].toString(),
                 'text': r[1].toString(),
-                'optionA': r[2].toString(),
-                'optionB': r[3].toString(),
-                'optionC': r[4].toString(),
-                'optionD': r[5].toString(),
-                'answer': r[6].toString(),
-              },
-            )
+                'optionA': r.length > 2 ? r[2].toString() : '',
+                'optionB': r.length > 3 ? r[3].toString() : '',
+                'optionC': r.length > 4 ? r[4].toString() : '',
+                'optionD': r.length > 5 ? r[5].toString() : '',
+                'answer': r.length > 6 ? r[6].toString() : '',
+                'imageBase64': imageBase64, // Include image data
+              };
+            })
             .toList();
+
+        print("📚 Loaded ${allQuestions.length} questions");
+
+        // Count questions with images
+        int imageCount = allQuestions
+            .where((q) => q['imageBase64'] != null)
+            .length;
+        print("📸 Questions with images: $imageCount/${allQuestions.length}");
 
         allQuestions.shuffle();
         final selectedQuestions = allQuestions
@@ -135,9 +163,10 @@ class _StudentViewState extends ConsumerState<StudentView> {
               questions: selectedQuestions,
               course: _studentData!['exam'],
               durationMinutes: _studentData!['durationRaw'],
+              sessionCode: _studentData!['subjectCode'],
             );
       } else {
-        _showError("Question bank not found on server.");
+        _showError("Question bank not found for this session.");
       }
     } catch (e) {
       _showError("Error downloading questions: $e");
@@ -149,194 +178,38 @@ class _StudentViewState extends ConsumerState<StudentView> {
   @override
   Widget build(BuildContext context) {
     final quizState = ref.watch(quizProvider);
+    final serverHost = Uri.base.host.isEmpty ? "localhost" : Uri.base.host;
 
+    return ServerConnectionWidget(
+      serverHost: serverHost,
+      serverPort: 8080,
+      checkInterval: const Duration(seconds: 10),
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        body: _buildBody(quizState),
+      ),
+    );
+  }
+
+  Widget _buildBody(QuizState quizState) {
     if (_studentData == null) {
-      return _buildLoginScreen();
+      return LoginScreen(
+        matricController: _matricController,
+        surnameController: _surnameController,
+        onLoginPressed: _attemptLogin,
+        isLoading: _isLoading,
+      );
     }
 
     if (!quizState.isQuizStarted) {
-      return _buildWaitingRoom();
+      return WaitingRoom(
+        studentData: _studentData!,
+        onLogout: () => setState(() => _studentData = null),
+        onStartExam: _fetchQuestionsAndStart,
+        isLoading: _isLoading,
+      );
     }
 
     return const StudentQuizView();
-  }
-
-  Widget _buildLoginScreen() {
-    return Scaffold(
-      backgroundColor: Colors.indigo[900],
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: Container(
-            width: 400,
-            padding: const EdgeInsets.all(32),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(16),
-              boxShadow: const [
-                BoxShadow(color: Colors.black26, blurRadius: 10),
-              ],
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(
-                  Icons.school_rounded,
-                  size: 60,
-                  color: Colors.indigo,
-                ),
-                const SizedBox(height: 16),
-                const Text(
-                  "STUDENT PORTAL",
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-                ),
-                const Text(
-                  "Enter your details to proceed",
-                  style: TextStyle(color: Colors.grey),
-                ),
-                const SizedBox(height: 32),
-                TextField(
-                  controller: _matricController,
-                  decoration: const InputDecoration(
-                    labelText: "Matric Number",
-                    prefixIcon: Icon(Icons.badge),
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: _surnameController,
-                  decoration: const InputDecoration(
-                    labelText: "Surname",
-                    prefixIcon: Icon(Icons.person),
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 32),
-                _isLoading
-                    ? const CircularProgressIndicator()
-                    : ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          minimumSize: const Size(double.infinity, 55),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                        ),
-                        onPressed: _attemptLogin,
-                        child: const Text(
-                          "VERIFY IDENTITY",
-                          style: TextStyle(fontSize: 16),
-                        ),
-                      ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildWaitingRoom() {
-    return Scaffold(
-      backgroundColor: Colors.indigo[900],
-      body: Center(
-        child: Container(
-          width: 500,
-          margin: const EdgeInsets.all(20),
-          padding: const EdgeInsets.all(40),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text(
-                "CANDIDATE CONFIRMATION",
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.indigo,
-                ),
-              ),
-              const Divider(height: 40),
-              _detailRow("FULL NAME", _studentData!['name']),
-              _detailRow("MATRIC NO", _studentData!['matric']),
-              _detailRow("EXAM COURSE", _studentData!['exam']),
-              _detailRow("QUESTIONS", "${_studentData!['limit']} Questions"),
-              _detailRow("ALLOTTED TIME", _studentData!['durationDisplay']),
-              const SizedBox(height: 40),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFFFF3E0),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Text(
-                  "⚠️ Ensure your details are correct. Clicking start will begin your timer immediately.",
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Colors.orange,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 32),
-              _isLoading
-                  ? const CircularProgressIndicator()
-                  : Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton(
-                            onPressed: () =>
-                                setState(() => _studentData = null),
-                            child: const Text("LOGOUT"),
-                          ),
-                        ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          flex: 2,
-                          child: ElevatedButton(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.green[700],
-                            ),
-                            onPressed: _fetchQuestionsAndStart,
-                            child: const Text(
-                              "START EXAM",
-                              style: TextStyle(color: Colors.white),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _detailRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 10),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(
-            label,
-            style: const TextStyle(
-              fontWeight: FontWeight.bold,
-              color: Colors.grey,
-              fontSize: 12,
-            ),
-          ),
-          Text(
-            value,
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-          ),
-        ],
-      ),
-    );
   }
 }

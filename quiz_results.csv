@@ -1,3 +1,1 @@
-Timestamp,Matric,Surname,Firstname,Score
-2026-02-25T08:53:09.864432,P2002,OTHMAN,HASSAN,20.0
-
+Timestamp,Matric,Surname,Firstname,Subject,Obj Correct,Total Obj,Typed Correct,Total Typed,Theory Answered,Total Theory,Score(%)
